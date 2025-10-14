@@ -1,61 +1,76 @@
 // /api/trades.ts
-// Free public version (no API key required)
-// Fetches congressional trade data from Capitol Trades' public endpoint
+// Free source: House Stock Watcher (public S3 JSON)
+
+type HSWTTrade = {
+  TransactionDate?: string;   // "2025-09-21"
+  DisclosureDate?: string;    // may be missing
+  Owner?: string;
+  Ticker?: string;
+  AssetName?: string;
+  Type?: string;              // "Purchase" | "Sale" | "Exchange"
+  Amount?: string;            // "$1,001 - $15,000"
+  Representative?: string;    // "Pelosi, Nancy"
+  District?: string;
+  State?: string;
+  Party?: string;
+  CapGainsOver200USD?: boolean;
+};
 
 export default async function handler(req, res) {
   try {
-    // Read query params
     const url = new URL(req.url, "http://x");
     const ticker = (url.searchParams.get("ticker") || "").toUpperCase();
-    const since = url.searchParams.get("since");
+    const since = url.searchParams.get("since"); // YYYY-MM-DD
     const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") || 50)));
 
-    // Fetch from Capitol Trades JSON feed (free and public)
-    const apiUrl = "https://www.capitoltrades.com/trades.json";
-    const response = await fetch(apiUrl, { next: { revalidate: 300 } }); // cache 5 min
+    // Public dataset (House of Representatives)
+    const HSW_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json";
 
-    if (!response.ok) {
-      throw new Error(`CapitolTrades returned ${response.status}`);
-    }
+    const r = await fetch(HSW_URL, { next: { revalidate: 1800 } }); // cache 30 min
+    if (!r.ok) throw new Error(`HouseStockWatcher returned ${r.status}`);
+    const raw = (await r.json()) as HSWTTrade[];
 
-    const data = await response.json();
-
-    // Optional filters
-    let trades = Array.isArray(data) ? data : [];
-
-    if (ticker) {
-      trades = trades.filter((t) => (t.Ticker || "").toUpperCase() === ticker);
-    }
+    // Filter
+    let items = raw;
+    if (ticker) items = items.filter(t => (t.Ticker || "").toUpperCase() === ticker);
 
     if (since) {
-      const sinceDate = new Date(since + "T00:00:00Z");
-      trades = trades.filter((t) => {
-        const d = t.TransactionDate || t.DisclosureDate;
-        return d && new Date(d + "T00:00:00Z") >= sinceDate;
+      const cut = new Date(since + "T00:00:00Z").getTime();
+      items = items.filter(t => {
+        const d = t.TransactionDate || t.DisclosureDate || "";
+        const ts = d ? new Date(d + "T00:00:00Z").getTime() : 0;
+        return ts >= cut;
       });
     }
 
     // Sort newest first
-    trades.sort((a, b) => {
-      const da = new Date(a.TransactionDate || a.DisclosureDate || 0).getTime();
-      const db = new Date(b.TransactionDate || b.DisclosureDate || 0).getTime();
+    items.sort((a, b) => {
+      const da = new Date((a.TransactionDate || a.DisclosureDate || "1970-01-01") + "T00:00:00Z").getTime();
+      const db = new Date((b.TransactionDate || b.DisclosureDate || "1970-01-01") + "T00:00:00Z").getTime();
       return db - da;
     });
 
-    // Limit results
-    trades = trades.slice(0, limit);
+    // Limit & normalize a bit
+    const trades = items.slice(0, limit).map(t => ({
+      disclosure_date: t.DisclosureDate || null,
+      transaction_date: t.TransactionDate || null,
+      representative: t.Representative || null,
+      ticker: t.Ticker || null,
+      asset: t.AssetName || null,
+      transaction: t.Type || null,
+      amount: t.Amount || null,
+      party: t.Party || null,
+      state: t.State || null,
+      house_only: true
+    }));
 
-    // Send response
     res.status(200).json({
       ok: true,
+      source: "House Stock Watcher (public)",
       count: trades.length,
-      trades,
-      source: "capitoltrades.com (public)",
+      trades
     });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      error: err.message || "Failed to fetch data",
-    });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || "failed" });
   }
 }
