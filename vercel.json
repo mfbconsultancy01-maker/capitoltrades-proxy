@@ -1,11 +1,27 @@
 {
   "version": 2,
   "functions": {
-    "api/**/*.ts":    { "runtime": "nodejs20.x" },
-    "imports/**/*.ts": { "runtime": "nodejs20.x" }
+    "api/**/*.ts": {
+      "runtime": "vercel-node@20.0.0"
+    },
+    "imports/**/*.ts": {
+      "runtime": "vercel-node@20.0.0"
+    }
   },
   "routes": [
-    { "src": "/api/(.*)",     "headers": { "Access-Control-Allow-Origin": "*" }, "dest": "/api/$1" },
-    { "src": "/imports/(.*)", "headers": { "Access-Control-Allow-Origin": "*" }, "dest": "/imports/$1" }
+    {
+      "src": "/api/(.*)",
+      "headers": {
+        "Access-Control-Allow-Origin": "*"
+      },
+      "dest": "/api/$1"
+    },
+    {
+      "src": "/imports/(.*)",
+      "headers": {
+        "Access-Control-Allow-Origin": "*"
+      },
+      "dest": "/imports/$1"
+    }
   ]
 }
