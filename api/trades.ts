@@ -1,5 +1,6 @@
 // /api/trades.ts
-// Free congressional trades with robust multi-source fallback (no API key)
+// Free congressional trades with resilient multi-source fallback (no API key)
+// + verbose debugging so we can see what's failing in Vercel logs
 
 type Trade = {
   TransactionDate?: string;
@@ -14,50 +15,61 @@ type Trade = {
 };
 
 const SOURCES = [
-  // 1) Primary GitHub mirror
+  "https://cdn.jsdelivr.net/gh/house-stock-watcher/data@main/data/all_transactions.json",
   "https://raw.githubusercontent.com/house-stock-watcher/data/main/data/all_transactions.json",
-  // 2) Alternate GitHub mirror (older repo name)
-  "https://raw.githubusercontent.com/house-stock-watcher/house-stock-watcher-data/main/data/all_transactions.json",
-  // 3) Original S3 bucket (sometimes blocks direct browser; works from serverless)
+  "https://raw.githubusercontent.com/house-stock-watcher/data/refs/heads/main/data/all_transactions.json",
   "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json",
 ];
 
-async function fetchFirstAvailable(): Promise<Trade[]> {
+async function fetchFirstAvailable(debug: string[]): Promise<{ data: Trade[]; source: string }> {
   let lastErr: Error | null = null;
+
   for (const url of SOURCES) {
     try {
+      debug.push(`TRY ${url}`);
       const resp = await fetch(url, {
-        // cache at the edge for 30 min to be nice to the public mirrors
         next: { revalidate: 1800 },
+        redirect: "follow",
         headers: {
-          // a UA helps with some strict mirrors
           "User-Agent": "capitoltrades-proxy/1.0 (serverless; vercel)",
           "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+          "Cache-Control": "no-cache",
         },
       });
+
       if (!resp.ok) {
-        lastErr = new Error(`Source ${url} returned ${resp.status}`);
+        const txt = await resp.text().catch(() => "");
+        lastErr = new Error(`Source ${url} returned ${resp.status} ${resp.statusText} ${txt?.slice(0,120)}`);
+        debug.push(lastErr.message);
         continue;
       }
+
       const json = await resp.json();
-      if (Array.isArray(json)) return json as Trade[];
+      if (Array.isArray(json)) {
+        debug.push(`OK ${url}`);
+        return { data: json as Trade[], source: url };
+      }
       lastErr = new Error(`Source ${url} returned non-array payload`);
+      debug.push(lastErr.message);
     } catch (e: any) {
       lastErr = e;
+      debug.push(`ERR ${url}: ${e?.message || e}`);
       continue;
     }
   }
+
   throw lastErr ?? new Error("All sources failed");
 }
 
 export default async function handler(req, res) {
+  const debug: string[] = [];
   try {
     const url = new URL(req.url, "http://x");
     const ticker = (url.searchParams.get("ticker") || "").toUpperCase();
     const since = url.searchParams.get("since");
     const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") || 50)));
 
-    const raw = await fetchFirstAvailable();
+    const { data: raw, source } = await fetchFirstAvailable(debug);
 
     // Filter
     let items = raw;
@@ -79,7 +91,7 @@ export default async function handler(req, res) {
       return db - da;
     });
 
-    // Limit & normalize a bit
+    // Limit & light normalize
     const trades = items.slice(0, limit).map(t => ({
       disclosure_date: t.DisclosureDate ?? null,
       transaction_date: t.TransactionDate ?? null,
@@ -93,13 +105,12 @@ export default async function handler(req, res) {
       chamber: "House",
     }));
 
-    res.status(200).json({
-      ok: true,
-      source: "House Stock Watcher (multi-source)",
-      count: trades.length,
-      trades,
-    });
+    // Emit debug to Vercel logs
+    console.log("[/api/trades] debug:", debug);
+
+    res.status(200).json({ ok: true, source, count: trades.length, trades });
   } catch (err: any) {
-    res.status(500).json({ ok: false, error: err?.message || "failed" });
+    console.error("[/api/trades] error:", err?.message, "debug:", debug);
+    res.status(500).json({ ok: false, error: err?.message || "failed", debug });
   }
 }
