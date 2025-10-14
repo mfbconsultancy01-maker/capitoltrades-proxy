@@ -1,6 +1,3 @@
-
-// api/health.ts
-import { ok } from "../lib/db";
-export default async function handler() {
-  return ok(null as any, { ok: true, service: "capitoltrades-proxy" });
+export default function handler(req, res) {
+  return res.status(200).json({ ok: true, service: "capitoltrades-proxy" });
 }
